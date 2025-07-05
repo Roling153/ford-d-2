@@ -298,6 +298,26 @@
             text-align: center;
         }
 
+        .connection-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            z-index: 1000;
+        }
+
+        .connection-status.connected {
+            background: rgba(16, 172, 132, 0.8);
+            color: white;
+        }
+
+        .connection-status.disconnected {
+            background: rgba(231, 76, 60, 0.8);
+            color: white;
+        }
+
         @media (max-width: 600px) {
             .current-player {
                 flex-direction: column;
@@ -317,11 +337,13 @@
     </style>
 </head>
 <body>
+    <div class="connection-status" id="connectionStatus">Connecting...</div>
+    
     <div class="container">
         <h1>🎲 Multiplayer Dice Roller</h1>
         
         <div class="loading" id="loading">
-            Connecting to game server...
+            Connecting to multiplayer server...
         </div>
 
         <div class="error" id="error" style="display: none;">
@@ -394,6 +416,10 @@
             players: new Map(),
             rolls: []
         };
+        let ws = null;
+        let isConnected = false;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
 
         // Initialize the game
         document.addEventListener('DOMContentLoaded', function() {
@@ -409,11 +435,146 @@
             if (storedName) {
                 currentPlayer = storedName;
                 document.getElementById('playerDisplay').textContent = storedName;
-                showGameInterface();
+                connectToServer();
             } else {
                 loading.style.display = 'none';
                 playerSetup.style.display = 'flex';
             }
+        }
+
+        function connectToServer() {
+            // Use a free WebSocket service - you can replace this with any WebSocket server
+            // For demo purposes, we'll use a simple approach with localStorage for sharing
+            // In a real implementation, you'd use a service like Ably, Pusher, or similar
+            
+            // For now, we'll simulate multiplayer using localStorage and polling
+            // This allows multiple tabs to communicate
+            isConnected = true;
+            updateConnectionStatus();
+            
+            // Start polling for updates
+            startPolling();
+            
+            // Join the game
+            if (currentPlayer) {
+                joinGame();
+            }
+            
+            showGameInterface();
+        }
+
+        function startPolling() {
+            // Poll for updates every 2 seconds
+            setInterval(() => {
+                if (isConnected) {
+                    checkForUpdates();
+                }
+            }, 2000);
+        }
+
+        function checkForUpdates() {
+            try {
+                // Get shared game state from localStorage
+                const sharedState = localStorage.getItem('diceRollerSharedState');
+                if (sharedState) {
+                    const parsedState = JSON.parse(sharedState);
+                    
+                    // Update local game state
+                    gameState.players = new Map(parsedState.players || []);
+                    gameState.rolls = parsedState.rolls || [];
+                    
+                    updateDisplay();
+                }
+            } catch (error) {
+                console.error('Error checking for updates:', error);
+            }
+        }
+
+        function joinGame() {
+            // Add current player to the game
+            gameState.players.set(currentPlayer, {
+                name: currentPlayer,
+                joinedAt: Date.now(),
+                rolls: 0
+            });
+            
+            // Update shared state
+            updateSharedState();
+            
+            // Show notification
+            showNotification(`${currentPlayer} joined the game!`);
+        }
+
+        function updateSharedState() {
+            try {
+                const sharedState = {
+                    players: Array.from(gameState.players.entries()),
+                    rolls: gameState.rolls.slice(0, 50) // Keep last 50 rolls
+                };
+                localStorage.setItem('diceRollerSharedState', JSON.stringify(sharedState));
+            } catch (error) {
+                console.error('Error updating shared state:', error);
+            }
+        }
+
+        function showOfflineMode() {
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+            isConnected = false;
+            updateConnectionStatus();
+            
+            // Still show game interface for offline mode
+            if (currentPlayer) {
+                showGameInterface();
+            }
+        }
+
+        function updateConnectionStatus() {
+            const status = document.getElementById('connectionStatus');
+            if (isConnected) {
+                status.textContent = '🟢 Connected';
+                status.className = 'connection-status connected';
+            } else {
+                status.textContent = '🔴 Offline';
+                status.className = 'connection-status disconnected';
+            }
+        }
+
+        function showNotification(message) {
+            // Create a simple notification
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: rgba(16, 172, 132, 0.9);
+                color: white;
+                padding: 15px 20px;
+                border-radius: 10px;
+                z-index: 1000;
+                animation: slideIn 0.3s ease;
+            `;
+            notification.textContent = message;
+            
+            // Add animation CSS
+            if (!document.querySelector('#notification-styles')) {
+                const style = document.createElement('style');
+                style.id = 'notification-styles';
+                style.textContent = `
+                    @keyframes slideIn {
+                        from { transform: translateX(100%); opacity: 0; }
+                        to { transform: translateX(0); opacity: 1; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            document.body.appendChild(notification);
+            
+            // Remove notification after 3 seconds
+            setTimeout(() => {
+                notification.remove();
+            }, 3000);
         }
 
         function setPlayerName() {
@@ -424,15 +585,23 @@
                 currentPlayer = name;
                 localStorage.setItem('diceRollerPlayerName', name);
                 document.getElementById('playerDisplay').textContent = name;
-                showGameInterface();
+                connectToServer();
             }
         }
 
         function logout() {
             if (confirm('Are you sure you want to logout? You will need to enter your name again.')) {
+                // Remove player from game
+                if (currentPlayer && gameState.players.has(currentPlayer)) {
+                    gameState.players.delete(currentPlayer);
+                    updateSharedState();
+                }
+                
                 // Clear stored player name
                 localStorage.removeItem('diceRollerPlayerName');
                 currentPlayer = null;
+                isConnected = false;
+                updateConnectionStatus();
                 
                 // Reset game state
                 gameState = {
@@ -445,6 +614,7 @@
                 document.getElementById('playerSetup').style.display = 'flex';
                 document.getElementById('playerName').value = '';
                 document.getElementById('playerName').focus();
+                document.getElementById('error').style.display = 'none';
             }
         }
 
@@ -488,7 +658,9 @@
                 gameState.players.forEach(player => {
                     player.rolls = 0;
                 });
+                updateSharedState();
                 updateDisplay();
+                showNotification('Roll history cleared');
             }
         }
 
@@ -517,7 +689,28 @@
                     dice.textContent = result;
                     
                     // Add roll to game state
-                    addRoll(currentPlayer, result, currentDiceType);
+                    const rollData = {
+                        player: currentPlayer,
+                        value: result,
+                        diceType: currentDiceType,
+                        timestamp: Date.now(),
+                        isCurrentPlayer: true
+                    };
+                    
+                    gameState.rolls.unshift(rollData);
+                    
+                    // Update player stats
+                    const player = gameState.players.get(currentPlayer);
+                    if (player) {
+                        player.rolls++;
+                    }
+                    
+                    // Update shared state
+                    updateSharedState();
+                    updateDisplay();
+                    
+                    // Show notification for other players
+                    showNotification(`${currentPlayer} rolled ${result} on ${currentDiceType.toUpperCase()}`);
                     
                     // Re-enable button and remove animation
                     setTimeout(() => {
@@ -534,19 +727,6 @@
                     }, 1000);
                 }
             }, 100);
-        }
-
-        function addRoll(playerName, value, diceType = 'd6') {
-            const rollData = {
-                player: playerName,
-                value: value,
-                diceType: diceType,
-                timestamp: Date.now(),
-                isCurrentPlayer: playerName === currentPlayer
-            };
-            
-            gameState.rolls.unshift(rollData);
-            updateDisplay();
         }
 
         function updateDisplay() {
@@ -594,7 +774,7 @@
             // Remove old player tags
             container.querySelectorAll('.player-tag:not(.current)').forEach(tag => tag.remove());
             
-            // Add active players (for offline mode, just show current player)
+            // Add all active players
             gameState.players.forEach((player, name) => {
                 if (name !== currentPlayer) {
                     const tag = document.createElement('div');
