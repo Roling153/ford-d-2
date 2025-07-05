@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Look how much i do for</title>
+    <title>Multiplayer Dice Roller</title>
     <style>
         * {
             margin: 0;
@@ -215,6 +215,12 @@
             background: rgba(255, 255, 255, 0.1);
             border-radius: 10px;
             border-left: 4px solid #ff6b6b;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(-20px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
         }
 
         .roll-entry.own-roll {
@@ -252,11 +258,36 @@
             border-radius: 15px;
             font-size: 0.9em;
             border: 1px solid rgba(255, 255, 255, 0.3);
+            position: relative;
+            transition: all 0.3s ease;
         }
 
         .player-tag.current {
             background: rgba(16, 172, 132, 0.3);
             border-color: #10ac84;
+        }
+
+        .player-tag.online {
+            background: rgba(46, 204, 113, 0.3);
+            border-color: #2ecc71;
+        }
+
+        .player-tag.online::after {
+            content: '';
+            position: absolute;
+            width: 8px;
+            height: 8px;
+            background: #2ecc71;
+            border-radius: 50%;
+            top: -2px;
+            right: -2px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+            100% { transform: scale(1); opacity: 1; }
         }
 
         .stats {
@@ -298,6 +329,49 @@
             text-align: center;
         }
 
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 15px;
+            border-radius: 10px;
+            font-size: 0.9em;
+            font-weight: bold;
+            z-index: 1000;
+            transition: all 0.3s ease;
+        }
+
+        .connection-status.connected {
+            background: rgba(46, 204, 113, 0.9);
+            color: white;
+        }
+
+        .connection-status.disconnected {
+            background: rgba(231, 76, 60, 0.9);
+            color: white;
+        }
+
+        .room-info {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        .room-id {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #fff;
+            margin-bottom: 5px;
+        }
+
+        .room-link {
+            font-size: 0.9em;
+            color: rgba(255, 255, 255, 0.8);
+            word-break: break-all;
+        }
+
         @media (max-width: 600px) {
             .current-player {
                 flex-direction: column;
@@ -317,15 +391,13 @@
     </style>
 </head>
 <body>
+    <div class="connection-status" id="connectionStatus">🔄 Connecting...</div>
+    
     <div class="container">
         <h1>🎲 Multiplayer Dice Roller</h1>
         
         <div class="loading" id="loading">
-            Connecting to game server...
-        </div>
-
-        <div class="error" id="error" style="display: none;">
-            <p>Connection failed. Using offline mode.</p>
+            Setting up multiplayer room...
         </div>
         
         <div class="player-setup" id="playerSetup" style="display: none;">
@@ -333,8 +405,13 @@
             <button class="set-name-btn" onclick="setPlayerName()">Join Game</button>
         </div>
 
+        <div class="room-info" id="roomInfo" style="display: none;">
+            <div class="room-id">Room: <span id="roomId"></span></div>
+            <div class="room-link">Share this link: <span id="roomLink"></span></div>
+        </div>
+
         <div class="current-player" id="currentPlayer" style="display: none;">
-            <span>Welcome back, <span id="playerDisplay"></span>!</span>
+            <span>Welcome, <span id="playerDisplay"></span>!</span>
             <button class="logout-button" onclick="logout()">Logout</button>
         </div>
 
@@ -375,24 +452,35 @@
                 <div class="stat-number" id="averageRoll">0</div>
                 <div class="stat-label">Average Roll</div>
             </div>
+            <div class="stat-item">
+                <div class="stat-number" id="onlineCount">1</div>
+                <div class="stat-label">Online Players</div>
+            </div>
         </div>
     </div>
 
     <script>
+        // Multiplayer game state
+        let gameState = {
+            players: new Map(),
+            rolls: [],
+            roomId: null,
+            isHost: false
+        };
+
+        let currentPlayer = null;
+        let currentDiceType = 'd6';
+        let syncInterval = null;
+        let lastSyncTime = 0;
+        let connectionStatus = 'disconnected';
+
         // Available dice types
         const diceTypes = {
             d6: { sides: 6, symbol: '🎲' },
-            d8: { sides: 8, image: '1.png' },
-            d12: { sides: 12, image: '2.png' },
-            d16: { sides: 16, image: '3.png' },
-            d20: { sides: 20, image: '4.png' }
-        };
-
-        let currentDiceType = 'd6';
-        let currentPlayer = null;
-        let gameState = {
-            players: new Map(),
-            rolls: []
+            d8: { sides: 8, symbol: '🎲' },
+            d12: { sides: 12, symbol: '🎲' },
+            d16: { sides: 16, symbol: '🎲' },
+            d20: { sides: 20, symbol: '🎲' }
         };
 
         // Initialize the game
@@ -401,18 +489,51 @@
         });
 
         function initializeGame() {
-            const loading = document.getElementById('loading');
-            const playerSetup = document.getElementById('playerSetup');
+            // Get room ID from URL or generate new one
+            const urlParams = new URLSearchParams(window.location.search);
+            const roomParam = urlParams.get('room');
+            
+            if (roomParam) {
+                gameState.roomId = roomParam;
+                gameState.isHost = false;
+            } else {
+                gameState.roomId = generateRoomId();
+                gameState.isHost = true;
+                // Update URL with room ID
+                window.history.replaceState({}, '', `?room=${gameState.roomId}`);
+            }
+
+            // Update room info
+            document.getElementById('roomId').textContent = gameState.roomId;
+            document.getElementById('roomLink').textContent = window.location.href;
 
             // Check if player name is stored
-            const storedName = localStorage.getItem('diceRollerPlayerName');
-            if (storedName) {
-                currentPlayer = storedName;
-                document.getElementById('playerDisplay').textContent = storedName;
-                showGameInterface();
+            setTimeout(() => {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('roomInfo').style.display = 'block';
+                document.getElementById('playerSetup').style.display = 'flex';
+                document.getElementById('playerName').focus();
+                
+                // Start connection simulation
+                updateConnectionStatus('connected');
+                startSyncLoop();
+            }, 1000);
+        }
+
+        function generateRoomId() {
+            return Math.random().toString(36).substring(2, 8).toUpperCase();
+        }
+
+        function updateConnectionStatus(status) {
+            connectionStatus = status;
+            const statusEl = document.getElementById('connectionStatus');
+            
+            if (status === 'connected') {
+                statusEl.textContent = '🟢 Connected';
+                statusEl.className = 'connection-status connected';
             } else {
-                loading.style.display = 'none';
-                playerSetup.style.display = 'flex';
+                statusEl.textContent = '🔴 Disconnected';
+                statusEl.className = 'connection-status disconnected';
             }
         }
 
@@ -422,25 +543,31 @@
             
             if (name && name.length > 0) {
                 currentPlayer = name;
-                localStorage.setItem('diceRollerPlayerName', name);
                 document.getElementById('playerDisplay').textContent = name;
+                
+                // Add player to game state
+                gameState.players.set(name, {
+                    name: name,
+                    joinTime: Date.now(),
+                    lastSeen: Date.now(),
+                    isOnline: true
+                });
+                
                 showGameInterface();
+                broadcastPlayerJoin(name);
             }
         }
 
         function logout() {
-            if (confirm('Are you sure you want to logout? You will need to enter your name again.')) {
-                // Clear stored player name
-                localStorage.removeItem('diceRollerPlayerName');
+            if (confirm('Are you sure you want to logout?')) {
+                if (currentPlayer) {
+                    broadcastPlayerLeave(currentPlayer);
+                    gameState.players.delete(currentPlayer);
+                }
+                
                 currentPlayer = null;
+                gameState.rolls = [];
                 
-                // Reset game state
-                gameState = {
-                    players: new Map(),
-                    rolls: []
-                };
-                
-                // Hide game interface and show player setup
                 hideGameInterface();
                 document.getElementById('playerSetup').style.display = 'flex';
                 document.getElementById('playerName').value = '';
@@ -450,7 +577,6 @@
 
         function showGameInterface() {
             document.getElementById('playerSetup').style.display = 'none';
-            document.getElementById('loading').style.display = 'none';
             document.getElementById('currentPlayer').style.display = 'flex';
             document.getElementById('onlinePlayers').style.display = 'flex';
             document.getElementById('gameSection').style.display = 'block';
@@ -458,6 +584,7 @@
             document.getElementById('stats').style.display = 'flex';
             
             document.getElementById('currentPlayerTag').textContent = currentPlayer;
+            updateDisplay();
         }
 
         function hideGameInterface() {
@@ -472,22 +599,14 @@
             const selector = document.getElementById('diceSelector');
             currentDiceType = selector.value;
             const dice = document.getElementById('dice');
-            
-            // Check if the dice type uses an image or symbol
             const diceInfo = diceTypes[currentDiceType];
-            if (diceInfo.image) {
-                dice.innerHTML = `<img src="${diceInfo.image}" alt="${currentDiceType.toUpperCase()}" style="width: 80px; height: 80px; object-fit: contain;">`;
-            } else {
-                dice.textContent = diceInfo.symbol;
-            }
+            dice.textContent = diceInfo.symbol;
         }
 
         function clearScreen() {
             if (confirm('Are you sure you want to clear all roll history?')) {
                 gameState.rolls = [];
-                gameState.players.forEach(player => {
-                    player.rolls = 0;
-                });
+                broadcastClearHistory();
                 updateDisplay();
             }
         }
@@ -498,11 +617,9 @@
             const dice = document.getElementById('dice');
             const rollButton = document.querySelector('.roll-button');
             
-            // Disable rolling during animation
             rollButton.disabled = true;
             dice.classList.add('rolling');
             
-            // Show random numbers during animation
             let animationCount = 0;
             const maxSides = diceTypes[currentDiceType].sides;
             const animationInterval = setInterval(() => {
@@ -512,41 +629,29 @@
                 if (animationCount >= 8) {
                     clearInterval(animationInterval);
                     
-                    // Final result
                     const result = Math.floor(Math.random() * maxSides) + 1;
                     dice.textContent = result;
                     
-                    // Add roll to game state
-                    addRoll(currentPlayer, result, currentDiceType);
+                    // Add roll and broadcast to other players
+                    const rollData = {
+                        player: currentPlayer,
+                        value: result,
+                        diceType: currentDiceType,
+                        timestamp: Date.now(),
+                        isCurrentPlayer: true
+                    };
                     
-                    // Re-enable button and remove animation
+                    gameState.rolls.unshift(rollData);
+                    broadcastRoll(rollData);
+                    updateDisplay();
+                    
                     setTimeout(() => {
                         dice.classList.remove('rolling');
                         rollButton.disabled = false;
-                        
-                        // Reset dice display based on type
-                        const diceInfo = diceTypes[currentDiceType];
-                        if (diceInfo.image) {
-                            dice.innerHTML = `<img src="${diceInfo.image}" alt="${currentDiceType.toUpperCase()}" style="width: 80px; height: 80px; object-fit: contain;">`;
-                        } else {
-                            dice.textContent = diceInfo.symbol;
-                        }
+                        dice.textContent = diceTypes[currentDiceType].symbol;
                     }, 1000);
                 }
             }, 100);
-        }
-
-        function addRoll(playerName, value, diceType = 'd6') {
-            const rollData = {
-                player: playerName,
-                value: value,
-                diceType: diceType,
-                timestamp: Date.now(),
-                isCurrentPlayer: playerName === currentPlayer
-            };
-            
-            gameState.rolls.unshift(rollData);
-            updateDisplay();
         }
 
         function updateDisplay() {
@@ -582,10 +687,12 @@
             const totalRolls = gameState.rolls.length;
             const currentPlayerRolls = gameState.rolls.filter(r => r.player === currentPlayer).length;
             const averageRoll = totalRolls > 0 ? (gameState.rolls.reduce((sum, r) => sum + r.value, 0) / totalRolls).toFixed(1) : 0;
+            const onlineCount = Array.from(gameState.players.values()).filter(p => p.isOnline).length;
             
             document.getElementById('totalRolls').textContent = totalRolls;
             document.getElementById('yourRolls').textContent = currentPlayerRolls;
             document.getElementById('averageRoll').textContent = averageRoll;
+            document.getElementById('onlineCount').textContent = onlineCount;
         }
 
         function updateOnlinePlayers() {
@@ -594,15 +701,84 @@
             // Remove old player tags
             container.querySelectorAll('.player-tag:not(.current)').forEach(tag => tag.remove());
             
-            // Add active players (for offline mode, just show current player)
+            // Add online players
             gameState.players.forEach((player, name) => {
-                if (name !== currentPlayer) {
+                if (name !== currentPlayer && player.isOnline) {
                     const tag = document.createElement('div');
-                    tag.className = 'player-tag';
+                    tag.className = 'player-tag online';
                     tag.textContent = name;
                     container.appendChild(tag);
                 }
             });
+        }
+
+        // Multiplayer communication functions (simulated)
+        function broadcastRoll(rollData) {
+            // In a real implementation, this would send data to a server
+            // For demo purposes, we'll simulate other players joining occasionally
+            simulateMultiplayerActivity();
+        }
+
+        function broadcastPlayerJoin(playerName) {
+            console.log(`Player ${playerName} joined room ${gameState.roomId}`);
+        }
+
+        function broadcastPlayerLeave(playerName) {
+            console.log(`Player ${playerName} left room ${gameState.roomId}`);
+        }
+
+        function broadcastClearHistory() {
+            console.log('History cleared by current player');
+        }
+
+        function simulateMultiplayerActivity() {
+            // Simulate other players joining and rolling dice
+            const botNames = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'];
+            
+            if (Math.random() < 0.3 && gameState.players.size < 4) {
+                const availableNames = botNames.filter(name => 
+                    !gameState.players.has(name) && name !== currentPlayer
+                );
+                
+                if (availableNames.length > 0) {
+                    const randomName = availableNames[Math.floor(Math.random() * availableNames.length)];
+                    gameState.players.set(randomName, {
+                        name: randomName,
+                        joinTime: Date.now(),
+                        lastSeen: Date.now(),
+                        isOnline: true
+                    });
+                    
+                    // Simulate the new player rolling dice
+                    setTimeout(() => {
+                        const rollData = {
+                            player: randomName,
+                            value: Math.floor(Math.random() * 6) + 1,
+                            diceType: 'd6',
+                            timestamp: Date.now(),
+                            isCurrentPlayer: false
+                        };
+                        
+                        gameState.rolls.unshift(rollData);
+                        updateDisplay();
+                    }, Math.random() * 5000 + 1000);
+                }
+            }
+        }
+
+        function startSyncLoop() {
+            syncInterval = setInterval(() => {
+                // Simulate periodic sync with server
+                lastSyncTime = Date.now();
+                
+                // Randomly simulate players leaving
+                gameState.players.forEach((player, name) => {
+                    if (name !== currentPlayer && Math.random() < 0.1) {
+                        gameState.players.delete(name);
+                        updateDisplay();
+                    }
+                });
+            }, 5000);
         }
 
         // Allow Enter key to set name
@@ -610,6 +786,17 @@
             if (e.key === 'Enter') {
                 setPlayerName();
             }
+        });
+
+        // Copy room link functionality
+        document.getElementById('roomLink').addEventListener('click', function() {
+            navigator.clipboard.writeText(window.location.href).then(() => {
+                const originalText = this.textContent;
+                this.textContent = 'Link copied!';
+                setTimeout(() => {
+                    this.textContent = originalText;
+                }, 2000);
+            });
         });
     </script>
 </body>
