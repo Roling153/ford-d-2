@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Oath Bs</title>
-    <heading>the things i do</heading>
+    <title>Multiplayer Dice Roller</title>
     <style>
         * {
             margin: 0;
@@ -341,7 +340,7 @@
     <div class="connection-status" id="connectionStatus">Connecting...</div>
     
     <div class="container">
-        <h1>🎲 Multiplayer Dice Roller</h1>
+        <h1>Oath's own Dice Roller</h1>
         
         <div class="loading" id="loading">
             Connecting to Firebase...
@@ -354,6 +353,9 @@
         <div class="player-setup" id="playerSetup" style="display: none;">
             <input type="text" class="player-input" id="playerName" placeholder="Enter your name" maxlength="20">
             <button class="set-name-btn" onclick="setPlayerName()">Join Game</button>
+            <div class="player-instructions" style="margin-top:10px; color:#fff; font-size:0.95em; text-align:center;">
+                Have Fun.<br>Ensure to log out.<br><em>This took too much time and I am not even paid.</em>
+            </div>
         </div>
 
         <div class="current-player" id="currentPlayer" style="display: none;">
@@ -404,7 +406,7 @@
     <!-- Firebase SDK -->
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script
 
     <script>
         // Firebase configuration - Replace with your own Firebase config
