@@ -343,7 +343,7 @@
         <h1>🎲 Multiplayer Dice Roller</h1>
         
         <div class="loading" id="loading">
-            Connecting to multiplayer server...
+            Connecting to Firebase...
         </div>
 
         <div class="error" id="error" style="display: none;">
@@ -400,7 +400,26 @@
         </div>
     </div>
 
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+
     <script>
+        // Firebase configuration - Replace with your own Firebase config
+        const firebaseConfig = {
+            apiKey: "AIzaSyC-EXAMPLE-KEY",
+            authDomain: "your-project.firebaseapp.com",
+            projectId: "your-project-id",
+            storageBucket: "your-project.appspot.com",
+            messagingSenderId: "123456789",
+            appId: "1:123456789:web:abcdef123456"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
         // Available dice types
         const diceTypes = {
             d6: { sides: 6, symbol: '🎲' },
@@ -416,10 +435,8 @@
             players: new Map(),
             rolls: []
         };
-        let ws = null;
         let isConnected = false;
-        let reconnectAttempts = 0;
-        const maxReconnectAttempts = 5;
+        let playerId = null;
 
         // Initialize the game
         document.addEventListener('DOMContentLoaded', function() {
@@ -435,86 +452,84 @@
             if (storedName) {
                 currentPlayer = storedName;
                 document.getElementById('playerDisplay').textContent = storedName;
-                connectToServer();
+                connectToFirebase();
             } else {
                 loading.style.display = 'none';
                 playerSetup.style.display = 'flex';
             }
         }
 
-        function connectToServer() {
-            // Use a free WebSocket service - you can replace this with any WebSocket server
-            // For demo purposes, we'll use a simple approach with localStorage for sharing
-            // In a real implementation, you'd use a service like Ably, Pusher, or similar
-            
-            // For now, we'll simulate multiplayer using localStorage and polling
-            // This allows multiple tabs to communicate
-            isConnected = true;
-            updateConnectionStatus();
-            
-            // Start polling for updates
-            startPolling();
-            
-            // Join the game
-            if (currentPlayer) {
-                joinGame();
-            }
-            
-            showGameInterface();
-        }
-
-        function startPolling() {
-            // Poll for updates every 2 seconds
-            setInterval(() => {
-                if (isConnected) {
-                    checkForUpdates();
-                }
-            }, 2000);
-        }
-
-        function checkForUpdates() {
+        function connectToFirebase() {
             try {
-                // Get shared game state from localStorage
-                const sharedState = localStorage.getItem('diceRollerSharedState');
-                if (sharedState) {
-                    const parsedState = JSON.parse(sharedState);
-                    
-                    // Update local game state
-                    gameState.players = new Map(parsedState.players || []);
-                    gameState.rolls = parsedState.rolls || [];
-                    
-                    updateDisplay();
+                // Generate unique player ID
+                playerId = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                
+                // Listen for real-time updates
+                setupFirebaseListeners();
+                
+                isConnected = true;
+                updateConnectionStatus();
+                
+                // Join the game
+                if (currentPlayer) {
+                    joinGame();
                 }
+                
+                showGameInterface();
+                
             } catch (error) {
-                console.error('Error checking for updates:', error);
+                console.error('Firebase connection error:', error);
+                showOfflineMode();
             }
+        }
+
+        function setupFirebaseListeners() {
+            // Listen for players
+            db.collection('players').onSnapshot((snapshot) => {
+                gameState.players.clear();
+                snapshot.forEach((doc) => {
+                    const playerData = doc.data();
+                    gameState.players.set(playerData.name, {
+                        name: playerData.name,
+                        joinedAt: playerData.joinedAt,
+                        rolls: playerData.rolls || 0,
+                        lastSeen: playerData.lastSeen
+                    });
+                });
+                updateDisplay();
+            });
+
+            // Listen for rolls
+            db.collection('rolls').orderBy('timestamp', 'desc').limit(50).onSnapshot((snapshot) => {
+                gameState.rolls = [];
+                snapshot.forEach((doc) => {
+                    const rollData = doc.data();
+                    gameState.rolls.push({
+                        player: rollData.player,
+                        value: rollData.value,
+                        diceType: rollData.diceType,
+                        timestamp: rollData.timestamp,
+                        isCurrentPlayer: rollData.player === currentPlayer
+                    });
+                });
+                updateDisplay();
+            });
         }
 
         function joinGame() {
-            // Add current player to the game
-            gameState.players.set(currentPlayer, {
+            if (!currentPlayer || !isConnected) return;
+            
+            // Add player to Firebase
+            db.collection('players').doc(playerId).set({
                 name: currentPlayer,
                 joinedAt: Date.now(),
-                rolls: 0
+                rolls: 0,
+                lastSeen: Date.now()
+            }).then(() => {
+                showNotification(`${currentPlayer} joined the game!`);
+            }).catch((error) => {
+                console.error('Error joining game:', error);
             });
-            
-            // Update shared state
-            updateSharedState();
-            
-            // Show notification
-            showNotification(`${currentPlayer} joined the game!`);
-        }
-
-        function updateSharedState() {
-            try {
-                const sharedState = {
-                    players: Array.from(gameState.players.entries()),
-                    rolls: gameState.rolls.slice(0, 50) // Keep last 50 rolls
-                };
-                localStorage.setItem('diceRollerSharedState', JSON.stringify(sharedState));
-            } catch (error) {
-                console.error('Error updating shared state:', error);
-            }
         }
 
         function showOfflineMode() {
@@ -532,7 +547,7 @@
         function updateConnectionStatus() {
             const status = document.getElementById('connectionStatus');
             if (isConnected) {
-                status.textContent = '🟢 Connected';
+                status.textContent = '🟢 Online';
                 status.className = 'connection-status connected';
             } else {
                 status.textContent = '🔴 Offline';
@@ -585,21 +600,23 @@
                 currentPlayer = name;
                 localStorage.setItem('diceRollerPlayerName', name);
                 document.getElementById('playerDisplay').textContent = name;
-                connectToServer();
+                connectToFirebase();
             }
         }
 
         function logout() {
             if (confirm('Are you sure you want to logout? You will need to enter your name again.')) {
-                // Remove player from game
-                if (currentPlayer && gameState.players.has(currentPlayer)) {
-                    gameState.players.delete(currentPlayer);
-                    updateSharedState();
+                // Remove player from Firebase
+                if (playerId && isConnected) {
+                    db.collection('players').doc(playerId).delete().catch((error) => {
+                        console.error('Error removing player:', error);
+                    });
                 }
                 
                 // Clear stored player name
                 localStorage.removeItem('diceRollerPlayerName');
                 currentPlayer = null;
+                playerId = null;
                 isConnected = false;
                 updateConnectionStatus();
                 
@@ -654,13 +671,28 @@
 
         function clearScreen() {
             if (confirm('Are you sure you want to clear all roll history?')) {
-                gameState.rolls = [];
-                gameState.players.forEach(player => {
-                    player.rolls = 0;
-                });
-                updateSharedState();
-                updateDisplay();
-                showNotification('Roll history cleared');
+                if (isConnected) {
+                    // Clear rolls from Firebase
+                    db.collection('rolls').get().then((snapshot) => {
+                        const batch = db.batch();
+                        snapshot.docs.forEach((doc) => {
+                            batch.delete(doc.ref);
+                        });
+                        return batch.commit();
+                    }).then(() => {
+                        showNotification('Roll history cleared');
+                    }).catch((error) => {
+                        console.error('Error clearing rolls:', error);
+                    });
+                } else {
+                    // Offline mode
+                    gameState.rolls = [];
+                    gameState.players.forEach(player => {
+                        player.rolls = 0;
+                    });
+                    updateDisplay();
+                    showNotification('Roll history cleared');
+                }
             }
         }
 
@@ -688,28 +720,39 @@
                     const result = Math.floor(Math.random() * maxSides) + 1;
                     dice.textContent = result;
                     
-                    // Add roll to game state
-                    const rollData = {
-                        player: currentPlayer,
-                        value: result,
-                        diceType: currentDiceType,
-                        timestamp: Date.now(),
-                        isCurrentPlayer: true
-                    };
-                    
-                    gameState.rolls.unshift(rollData);
-                    
-                    // Update player stats
-                    const player = gameState.players.get(currentPlayer);
-                    if (player) {
-                        player.rolls++;
+                    // Add roll to Firebase
+                    if (isConnected) {
+                        const rollData = {
+                            player: currentPlayer,
+                            value: result,
+                            diceType: currentDiceType,
+                            timestamp: Date.now()
+                        };
+                        
+                        db.collection('rolls').add(rollData).then(() => {
+                            // Update player stats
+                            db.collection('players').doc(playerId).update({
+                                rolls: firebase.firestore.FieldValue.increment(1),
+                                lastSeen: Date.now()
+                            });
+                        }).catch((error) => {
+                            console.error('Error adding roll:', error);
+                        });
+                    } else {
+                        // Offline mode
+                        const rollData = {
+                            player: currentPlayer,
+                            value: result,
+                            diceType: currentDiceType,
+                            timestamp: Date.now(),
+                            isCurrentPlayer: true
+                        };
+                        
+                        gameState.rolls.unshift(rollData);
+                        updateDisplay();
                     }
                     
-                    // Update shared state
-                    updateSharedState();
-                    updateDisplay();
-                    
-                    // Show notification for other players
+                    // Show notification
                     showNotification(`${currentPlayer} rolled ${result} on ${currentDiceType.toUpperCase()}`);
                     
                     // Re-enable button and remove animation
@@ -791,6 +834,25 @@
                 setPlayerName();
             }
         });
+
+        // Clean up disconnected players
+        setInterval(() => {
+            if (isConnected) {
+                const now = Date.now();
+                const fiveMinutesAgo = now - (5 * 60 * 1000);
+                
+                gameState.players.forEach((player, name) => {
+                    if (player.lastSeen && player.lastSeen < fiveMinutesAgo) {
+                        // Remove inactive players
+                        db.collection('players').where('name', '==', name).get().then((snapshot) => {
+                            snapshot.docs.forEach((doc) => {
+                                doc.ref.delete();
+                            });
+                        });
+                    }
+                });
+            }
+        }, 60000); // Check every minute
     </script>
 </body>
 </html>
